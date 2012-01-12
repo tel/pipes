@@ -48,9 +48,9 @@
 ;;; types
 
 (defn- errorT         [err]   {:error err})
-(defn- nothingT       []      {:nothing true})
+(defn  nothing        []      {:nothing true})
 (defn  eof            []      {:eof true})
-(defn  chunk          ([xs]   {:stream xs})
+(defn  block          ([xs]   {:stream xs})
                       ([]     {:stream []}))
 (defn  yield          ([b xs] {:yield b :stream xs})
                       ([b]    (yield b [])))
@@ -87,7 +87,7 @@
   (let [psrc  (@source)
         psink (@sink)]
     (try+
-      (loop [cyc (chunk)
+      (loop [cyc (block)
              ret nil]
         (if (not ret)
           ;; Get a value off the source
@@ -95,9 +95,13 @@
             (keymatch val0
               ;; :: Left Error
               [:error _] (recur cyc val0)
-              ;; :: Right (Stream a)
-              [:stream as]
-              ;; Pass it to the sink
+              ;; Invalid value catching
+              [:nothing _]
+              (errorT {:fatal "Nothing value passed through a connection."})
+              [:yield _]
+              (errorT {:fatal "Yield value passed through a connection."})
+              ;; else
+              []
               (let [val1 (psink val0)]
                 (keymatch val1
                   ;; :: Left Error
@@ -108,10 +112,7 @@
                   [:yield b
                    :stream as]   (recur {:stream as} b)
                   [] (throw+ {:fatal "Strange value passed to source."
-                              :value val1})))
-              ;; else
-              [] (throw+ {:fatal "Strange value passed to sink."
-                          :value val0})))
+                              :value val1})))))
           ;; Return a value after the sink yields
           ret))
       ;; And be sure to kill state on both of them!
@@ -125,14 +126,14 @@
 ;;; FUSION. There are left, right, and center fusions which have types
 ;;; like
 ;;; 
-;;; leftFuse   :: Source a -> Conduit a b -> Source b
-;;; rightFuse  :: Conduit a b -> Sink b -> Sink a
-;;; centerFuse :: Conduit a b -> Conduit b c -> Conduit a c
+;;; left-fuse   :: Source a -> Conduit a b -> Source b
+;;; right-fuse  :: Conduit a b -> Sink b -> Sink a
+;;; center-fuse :: Conduit a b -> Conduit b c -> Conduit a c
 ;;;
 ;;; Clearly, fusion is used to build more complex pipelines from
 ;;; conduit transformation before connecting the ends.
 
-(defn leftFuse
+(defn left-fuse
   "Fuse a source and a conduit returning a new source."
   [source conduit]
   (Source.
@@ -142,10 +143,6 @@
        (fn loop [stream0]
          (let [stream1 (psrc stream0)]
            (keymatch stream1
-             ;; Pass errors on through (m-fail like)
-             ;; TODO: this isn't correct, I don't want error to be
-             ;; true, I just want it to really be a key
-             [:error _] stream1
              ;; If there's a legitimate stream, then pass it to the
              ;; conduit
              [:stream as]
@@ -154,12 +151,19 @@
                  ;; Nothing was returned by the conduit? Okay, well,
                  ;; sources can't behave this way, so we loop until it
                  ;; succeeds.
-                 [:nothing _] (loop (chunk))
+                 [:nothing _] (loop (block))
                  ;; Otherwise, in Haskell we'd have to manipulate the
                  ;; types, but in Clojure we're good! Just push it along
-                 [] stream2)))))))))
+                 [] stream2))
+             ;; These are invalid values, so let's throw errors
+             [:nothing _]
+             (errorT {:fatal "Nothing value passed through a left fuse."})
+             [:yield _]
+             (errorT {:fatal "Yield value passed through a left fuse."})
+             ;; Pass any other types along
+             [] stream1)))))))
 
-(defn rightFuse
+(defn right-fuse
   "Fuse a conduit and a sink returning a new sink."
   [conduit sink]
   (Sink.
@@ -169,24 +173,43 @@
        (fn loop [stream0]
          (let [stream1 (pcond stream0)]
            (keymatch stream1
-             ;; The conduit returned some values
-             [:stream vals]
-             (let [stream2 (psink stream1)]
-               (keymatch stream2
-                 ;; If the sink yields, rewrap the yield dropping the
-                 ;; remainder of the inner stream.  This is weird, but
-                 ;; clearly necessary for type safety.
-                 ;;
-                 ;; rightFuse :: Conduit a b -> Sink c b -> Sink c a
-                 ;;
-                 ;; Therefore, the resultant sink returns leftover
-                 ;; streams of type [a], but we don't have those any
-                 ;; more (unless we collect from and store them off
-                 ;; the conduit).
-                 [:yield b] (yield b)
-                 [] stream2))
-             ;; If the conduit doesn't return values, then there's
-             ;; nothing to give to the sink.
+             ;; These are invalid values, so raise an error
+             [:yield _]
+             (errorT {:fatal "Yield valud passed through a right fuse."})
+             ;; Nothings pass through
+             [:nothing _] stream1
+             ;; But if it's a stream or EOF
+             [] (let [stream2 (psink stream1)]
+                  (keymatch stream2
+                    ;; If the sink yields, rewrap the yield dropping the
+                    ;; remainder of the inner stream.  This is weird, but
+                    ;; clearly necessary for type safety.
+                    ;;
+                    ;; rightFuse :: Conduit a b -> Sink c b -> Sink c a
+                    ;;
+                    ;; Therefore, the resultant sink returns leftover
+                    ;; streams of type [a], but we don't have those any
+                    ;; more (unless we collect from and store them off
+                    ;; the conduit).
+                    [:yield b] (yield b)
+                    [] stream2)))))))))
+
+(defn center-fuse
+  "Fuse two conduits in order (horizontal composition) returning a new
+  conduit. This relation introduces a category on conduits."
+  ;; This is the easiest fusion since the interfaces are basically
+  ;; identical.
+  [ca cb]
+  (Conduit.
+   (fn []
+     (let [pca (@ca)
+           pcb (@cb)]
+       (fn loop [stream0]
+         (let [stream1 (pca stream0)]
+           (keymatch stream1
+             [:stream _] (pcb stream1)
+             [:yield _]
+             (errorT {:fatal "Yield value passed through a center fuse."})
              [] stream1)))))))
 
 ;;; BUILDS
@@ -224,15 +247,34 @@
       nil
       `(fn ~@rest))))
 
-(defmacro source [binds & calls]
+(defmacro source
+  "Define a Source optionally closed over a let binding. A minimal
+  definition requires one definition form
+
+  (next [] ...) ;:: Either Error (Stream a)
+
+  which assumes that empty next chunks means EOF. Note, importantly,
+  that (nothing) is not a valid value for next. If the source can
+  replace unused chunks, you should also define replace
+
+  (replace [stream] ...) ;:: ()
+
+  and if this source opens scarce resources, you should define
+
+  (close [] ...) ;:: ()
+
+  which is called when the source is considered dead, either by
+  producing an EOF or when the sink yields a final value."
+
+  [binds & def-forms]
   (let [next-form
-        (or (function-named 'next calls)
+        (or (function-named 'next def-forms)
             (throw+ {:fatal "Cannot create a source without a definition of next."}))
         close-form
-        (or (function-named 'close calls)
+        (or (function-named 'close def-forms)
             `(fn []))
         replace-form
-        (or (function-named 'replace calls)
+        (or (function-named 'replace def-forms)
             `(fn [_#]))]
     `(Source.
       (fn []
@@ -245,28 +287,135 @@
             (keymatch val#
               ;; cleanup and eof on eof
               [:eof _#] (do (close! doors#)
-                           (closer#)
-                           (eof))
+                            (closer#)
+                            (eof))
 
               [:stream vals#]
               (if (empty? vals#)
                 ;; on empty stream, play a next value
-                (short-on-closed doors# (chunk (nexter#)))
+                (short-on-closed doors# (nexter#))
+                
                 ;; on replacement stream, replace then loop with an
                 ;; empty stream
                 (do (replacer# vals#)
-                    (pull# (chunk))))
+                    (pull# (block))))
 
               [] (throw+ {:fatal "Strange value passed to source."
                           :value val#}))))))))
 
+(defmacro sink
+  "Define a Sink optionally closed over a let binding. A minimal
+  definition requires one definition form
+
+  (update [vals] ...) ;:: Either Error (Maybe (b, Stream a))
+
+  but if this sink opens scarce resources or can intelligently handle
+  EOFs, you should define
+
+  (close [] ...) ;:: Either Error (Maybe (b, Stream a))
+
+  which is called when the sink is considered dead, either when it
+  yields or is passed an EOF."
+  [binds & def-forms]
+  (let [update-form
+        (or (function-named 'update def-forms)
+            (throw+ {:fatal "Cannot create a source without a definition of update."}))
+        close-form
+        (or (function-named 'close def-forms)
+            `(fn [] (yield nil)))]
+    `(Sink.
+      (fn []
+        (let [doors# (atom true)
+              ~@binds
+              updater# ~update-form
+              closer# ~close-form]
+          (fn pull# [val0#] ;;:: Stream a
+            (keymatch val0#
+              [:error _#] val0#
+              ;; On EOF, we call close and use its return value
+              [:eof _#] (do (close! doors#)
+                            (closer#))
+              ;; Otherwise there's a real stream and we need an update
+              [:stream vals#] (updater# vals#))))))))
+
+(defmacro conduit
+  "Define a Conduit optionally closed over a let binding. A minimal
+  definition requires one definition form like
+
+  (pass [vals] ...) ;:: Either Error (Maybe (Stream a))
+
+  but may also define another form
+
+  (close [] ...) ;:: Either Error (Maybe (Stream a))
+
+  which is called when the conduit either receives or returns an EOF."
+  [binds & def-forms]
+  (let [pass-form
+        (or (function-named 'pass def-forms)
+            (throw+ {:fatal "Cannot create a source without a definition of pass."}))
+        close-form
+        (or (function-named 'close def-forms)
+            `(fn [] (eof)))]
+    `(Conduit.
+      (fn []
+        (let [doors# (atom true)
+              ~@binds
+              passer# ~pass-form
+              closer# ~close-form]
+          (fn pull# [val0#] ;;:: Stream a
+            (keymatch val0#
+              [:eof _#]   (do (close! doors#)
+                              (closer#))
+              [:stream vals#] (short-on-closed doors# (passer# vals#)))))))))
+
 ;;; Some example sources
-
-(defn- constantlySource [v]
+(defn constant-source [v]
   (source []
-    (next [] [v])))
+    (next [] (block [v]))))
 
-(defn- naturalsSource [& {:keys [from inc] :or {from 0 inc 1}}]
+(defn naturals-source [& {:keys [from inc] :or {from 0 inc 1}}]
   (source [n (atom (- from inc))]
-    (next [] [(swap! n (partial + inc))])
+    (next [] (block [(swap! n (partial + inc))]))
     (replace [vals] (swap! n (first vals)))))
+
+(defn random-source []
+  (source []
+    (next [] (block [(rand)]))))
+            
+(defn list-source [vals & {:keys [by] :or {by 1}}]
+  (source [memory (ref vals)]
+    (next []
+          (dosync
+           (let [[take rest] (split-at by @memory)]
+             (ref-set memory rest)
+             (if (empty? take)
+               (eof)
+               (block take)))))
+    (replace [vals]
+             (dosync (alter memory (partial concat vals))))))
+
+(defn map-conduit [f]
+  (conduit []
+    (pass [vals] (block (map f vals)))))
+
+(defn take-conduit [n]
+  (conduit [limit (atom n)]
+    (pass [vals]
+          (let [[add rest] (split-at @limit vals)]
+            (swap! limit #(- % (count add)))
+            (if (< @limit 0)
+              (eof)
+              (block add))))))
+
+(defn peek-sink []
+  (sink []
+    (update [vals] (yield (first vals) vals))))
+
+(defn list-sink []
+  (sink [memory (atom [])]
+    (update [vals] (swap! memory #(concat % vals))
+            (nothing))
+    (close [] (yield @memory))))
+
+(defn take-sink [n]
+  (right-fuse (take-conduit n) (list-sink)))
