@@ -1,11 +1,43 @@
 # pipes
 
-Conduit (Enumerator/Iteratee) IO for Clojure. Build yourself a
-reusable IO pipeline.
+Pipey stream processing for Clojure. Build yourself a reusable
+streaming pipeline from highly orthogonal pieces.
+
+## Background
+
+Originally concieved by Oleg for Haskell as ["Enumerators and
+Iteratees"](http://okmij.org/ftp/Streams.html), pipey processing was a
+solution for building IO pipelines which can process input in constant
+space while keeping tight control of file handles and other scare
+resources. The concept was expanded in Yesod into
+[Conduits](http://www.yesodweb.com/blog/2012/01/conduits-conduits)
+which admitted that mutable state was easier to handle than monadic
+state.
+
+Pipes is a Clojure implementation of these ideas. As Clojure has
+easily accessible mutable state and try+/catch+ (via
+[Slingshot](https://github.com/scgilardi/slingshot)) the
+implementation is fairly simple allowing new Sources, Sinks, and
+Conduits to be written easily.
+
+Use pipey computation to handle streaming data and light parsing
+today!
 
 ## Usage
 
-FIXME: write me!
+Use lein or cake
+
+```Clojure
+[pipes/pipes "0.0.1"]
+```
+
+then
+
+```Clojure
+(use 'pipes.core)
+(connect (list-source (range 50)) (take-sink 10))
+; (0 1 2 3 4 5 6 7 8 9)
+```
 
 ## License
 
