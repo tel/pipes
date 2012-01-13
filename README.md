@@ -8,12 +8,12 @@ streaming pipeline from highly orthogonal pieces.
 
 ## Background
 
-Originally concieved by Oleg for Haskell as ["Enumerators and
-Iteratees"](http://okmij.org/ftp/Streams.html), pipey processing was a
-solution for building IO pipelines which can process input in constant
-space while keeping tight control of file handles and other scare
-resources. The concept was expanded in Yesod into
-[Conduits](http://www.yesodweb.com/blog/2012/01/conduits-conduits)
+Originally concieved by [Oleg](http://okmij.org/ftp/) for Haskell as 
+["Enumerators and Iteratees"](http://okmij.org/ftp/Streams.html), 
+pipey processing was a solution for building IO pipelines which can 
+process input in constant space while keeping tight control of file 
+handles and other scare resources. The concept was expanded in Yesod 
+into [Conduits](http://www.yesodweb.com/blog/2012/01/conduits-conduits)
 which admitted that mutable state was easier to handle than monadic
 state.
 
