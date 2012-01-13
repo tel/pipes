@@ -42,6 +42,8 @@ then
 ; (0 1 2 3 4 5 6 7 8 9)
 ```
 
+**Everything will change soon.** Don't trust the API until version 1.0.0. You have been warned.
+
 ## License
 
 Copyright (C) 2012 Joseph Abrahamson
