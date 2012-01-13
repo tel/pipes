@@ -368,6 +368,42 @@
                               (closer#))
               [:stream vals#] (short-on-closed doors# (passer# vals#)))))))))
 
+;;; VERTICAL COMPOSITION
+;;; 
+;;; Sinks are monads in their return values under vertical
+;;; (sequential) composition.
+(m/defmonad sink-m
+  [m-result (fn [v] (Sink. (fn [] (fn [] (yield v)))))
+   m-bind (fn [sink f]
+            (Sink.
+             (fn []
+               (let [psink (@sink)
+                     ;; This variable tracks when the outer sink has
+                     ;; returned and we need only worry about the
+                     ;; inner.
+                     inner (atom nil)]
+                 (fn loop [stream0]
+                   (if (not @inner)
+                     ;; Process in the outer sink
+                     (keymatch stream0
+                       ;; If EOF is encountered, we're done
+                       [:eof a] stream0
+                       ;; same with errors
+                       [:error a] stream0
+                       ;; But otherwise we've got a stream and should look for
+                       ;; yields
+                       [] (let [stream1 (psink stream0)]
+                            [:error a] stream1
+                            [:nothing a] stream1
+                            ;; If the first sink yields then it's time to start
+                            ;; the next sink
+                            [:yield b :stream as]
+                            (do
+                              ;; Set the inner bypass
+                              (swap! inner (constantly (f b)))
+                              ;; And loop the excess back
+                              (loop (block as)))))))))))])
+
 ;;; Some example sources
 (defn constant-source [v]
   (source []
