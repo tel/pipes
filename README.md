@@ -116,7 +116,8 @@ or even a Conduit which passes the first `n` positive numbers
 
 ## Disclaimer
 
-**Everything will change soon.** Don't trust the API until version 1.0.0. You have been warned.
+**Everything will change soon.** Don't trust the API until
+version 1.0.0. Or, well, help me make it.
 
 ## License
 
