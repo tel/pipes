@@ -1,5 +1,6 @@
 (ns pipes.core
-  (:require [clojure.algo.monads :as m])
+  (:require [clojure.algo.monads :as m]
+            [clojure.string :as str])
   (:use [clojure.set :only [subset?]]
         [slingshot.slingshot :only [throw+ try+]]))
 
@@ -204,48 +205,64 @@
 
 (defn left-fuse
   "Fuse a source and a conduit returning a new source."
-  [source conduit]
-  (mkSource
-   (let [psrc (prepare* source)
-         pcond (prepare* conduit)]
-     (fn produce [in]
-       (match-enumeration (psrc in) a
-         [] (pcond a)
-         ;; TODO: Can we eliminate this m-e call? Both get passed
-         ;; along? When can this be eliminated?
-         [] (match-piping (pcond a) b
-              [] b
-              [] (produce (block []))
-              [] b))))))
+  ([source conduit]
+     (mkSource
+      (let [psrc (prepare* source)
+            pcond (prepare* conduit)]
+        (fn produce [in]
+          (match-enumeration (psrc in) a
+            [] (pcond a)
+            ;; TODO: Can we eliminate this m-e call? Both get passed
+            ;; along? When can this be eliminated?
+            [] (match-piping (pcond a) b
+                 [] b
+                 [] (produce (block []))
+                 [] b))))))
+  ([source conduit & conduits]
+     (reduce left-fuse (left-fuse source conduit) conduits)))
 
 (defn right-fuse
   "Fuse a conduit and a sink returning a new sink."
-  [conduit sink]
-  (mkSink
-   (let [pcond (prepare* conduit)
-         psink (prepare* sink)]
-     (fn consume [in]
-       (match-piping (pcond in) a
-         [] (match-yielded (psink a) b
-              [] (throw+ {:fatal "Sink returned Nothing when passed EOF."})
-              [] b)
-         [] a
-         [] (psink a))))))
+  ([conduit sink]
+     (mkSink
+      (let [pcond (prepare* conduit)
+            psink (prepare* sink)]
+        (fn consume [in]
+          (match-piping (pcond in) a
+            [] (match-yielded (psink a) b
+                 [] (throw+ {:fatal "Sink returned Nothing when passed EOF."})
+                 [] b)
+            [] a
+            [] (psink a))))))
+  ([conduit1 conduit2 & conduits-and-sink]
+     ;; There is no right fold (right reduce) in Clojure, so we have
+     ;; to get tricker
+     (let [[sink & conds] (reverse conduits-and-sink)]
+       (loop [acc sink conds conds]
+         (if (empty? conds)
+           ;; No more conduits in conds
+           (right-fuse conduit1
+                       (right-fuse conduit2 acc))
+           ;; Apply the first conduit in conds
+           (let [[head & rest] conds]
+             (recur (right-fuse head acc) rest)))))))
 
 (defn center-fuse
   "Fuse two conduits in order (horizontal composition) returning a new
   conduit. This relation introduces a category on conduits."
   ;; This is the easiest fusion since the interfaces are basically
   ;; identical.
-  [ca cb]
-  (mkConduit
-   (let [pca (prepare* ca)
-         pcb (prepare* cb)]
-     (fn passage [in]
-       (match-piping (pca in) a
-         [] (pcb a)
-         [] a
-         [] (pcb a))))))
+  ([ca cb]
+     (mkConduit
+      (let [pca (prepare* ca)
+            pcb (prepare* cb)]
+        (fn passage [in]
+          (match-piping (pca in) a
+            [] (pcb a)
+            [] a
+            [] (pcb a))))))
+  ([ca cb & conds]
+     (reduce center-fuse (center-fuse ca cb) conds)))
 
 ;;; BUILDS
 ;;;
@@ -269,9 +286,9 @@
 ;;; EOFs themselves.
 
 ;; some helpers
-(defn- open?  [atom] @atom)
+(defn open?  [atom] @atom)
 (defmacro short-on-closed [atom val] `(if (open? ~atom) ~val (eof)))
-(defn- close! [atom] (swap! atom (constantly nil)))
+(defn close! [atom] (swap! atom (constantly nil)))
 
 (defn- function-named
   "From the list of fundef forms, pull the one named the given symbols
@@ -423,6 +440,42 @@
                      (do (swap! inner (constantly (prepare* (f result))))
                          (consume (block leftover)))))))))])
 
+;;; SOURCE TRANSFORMATION
+;;;
+
+(defn eof-on-error
+  "Converts a source or conduit to one which absorbs errors and
+  returns EOF instead."
+  [scs]
+  (let [const (cond 
+                (isa? (type scs) Source)  #(new Source %)
+                (isa? (type scs) Conduit) #(new Conduit %)
+                :else nil)]
+    (if const
+      (const
+       (fn []
+         (let [psrc (prepare* scs)]
+           (fn produce [in]
+             (try+ (psrc in)
+                   (catch Object _
+                     (psrc (eof))
+                     (eof)))))))
+      (throw+ {:fatal "Can only apply eof-on-error to Sources and Conduits."
+               :type  (type scs)}))))
+
+(defn nothing-on-error
+  "Converts a conduit to one which ignores errors returning Nothing
+  instead every time an error occurs. Note this can easily casue
+  infinite loops!"
+  [cond]
+  (mkConduit
+   (let [pcond (prepare* cond)]
+     (fn passage [in]
+       (try+ (pcond in)
+             (catch Object _
+               ;; Send Nothing along
+               (block)))))))
+
 ;;; Some example sources
 (defn constant-source [v]
   (source []
@@ -449,9 +502,12 @@
     (replace [vals]
              (dosync (alter memory (partial concat vals))))))
 
-(defn map-conduit [f]
+(defn print-conduit []
   (conduit []
-    (pass [vals] (block (map f vals)))))
+    (pass [val]
+      (when (not (empty? val))
+        (println val))
+      (block val))))
 
 (defn take-conduit [n]
   (conduit [limit (atom (inc n))]
@@ -461,6 +517,36 @@
             (if (<= @limit 0)
               (eof)
               (block add))))))
+
+(defn map-conduit [f]
+  (conduit []
+    (pass [vals] (block (map f vals)))))
+
+(defn filter-conduit [pred]
+  (conduit []
+    (pass [vals]
+      (let [vals (filter pred vals)]
+        (if (empty? vals)
+          (block)
+          (block vals))))))
+
+(defn lines-conduit
+  "Conduit taking a stream of stream blocks and ensuring that each
+  block going forward is a single line of the original stream. Will
+  block forever if there are no newlines."
+  []
+  (conduit [buffer (atom "")]
+    (pass [strs]
+      (let [s (apply str @buffer strs)
+            finds   (re-seq #"[^\r\n]+(\r\n|\r|\n)*" (str @buffer s))
+            ;; lines are those where the group matched
+            lines   (map (comp str/trim first) (filter second finds))
+            ;; if the group doesn't match, that line is incomplete
+            remains (first (first (filter (comp not second) finds)))]
+        (swap! buffer (constantly remains))
+        (if (not (empty? lines))
+          (block lines)
+          (block))))))
 
 (defn peek-sink []
   (sink []
