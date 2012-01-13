@@ -560,3 +560,15 @@
 
 (defn take-sink [n]
   (right-fuse (take-conduit n) (list-sink)))
+
+(defn reduction-sink
+  ([f x0]
+     (sink [acc (atom x0)]
+       (update [vals]
+         (if (= ::none @acc)
+           (swap! acc (constantly (reduce f vals)))
+           (swap! acc (partial f (reduce f vals))))
+         (yield))
+       (close []
+         (yield @acc))))
+  ([f] (reduction-sink f ::none)))
