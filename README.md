@@ -15,9 +15,9 @@ process input in constant space while keeping tight control of file
 handles and other scare resources. The concept was expanded in Yesod 
 into [Conduits](http://www.yesodweb.com/blog/2012/01/conduits-conduits)
 which admitted that mutable state was easier to handle than monadic
-state.
+state. Pipes steals ideas from both.
 
-Pipes is a Clojure implementation of these ideas. As Clojure has
+Pipes is a Clojure implementation of pipey processing. As Clojure has
 easily accessible mutable state and try+/catch+ (via
 [Slingshot](https://github.com/scgilardi/slingshot)) the
 implementation is fairly simple allowing new Sources, Sinks, and
