@@ -60,7 +60,7 @@ then
 Pipey processing starts out generalizing `reduce`. Normally there 
 are two things going on in a `reduce`
 
-1. A value is popped off a seq
+1. A value is sourced from a seq
 2. That value is fed into an accumulation function along with the 
    current state (in the parlance "it's sunk into a Sink").
 
