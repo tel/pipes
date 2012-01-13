@@ -50,6 +50,9 @@ then
    (p/map-conduit #(parse-string % true)))
   (p/map-conduit #(select-keys % [:text])))
  (p/take-sink 20))
+; ({:text RT @Demisaurus: With @_NabriaaROZAY , :)}
+;  {:text RT @theazizi: Prefer wearing tshirts and jeans than dressing up}
+;  ...)
 ```
 
 ## Wait, what just happened?
