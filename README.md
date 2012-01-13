@@ -1,5 +1,8 @@
 # pipes
 
+<img src="https://github.com/downloads/tel/pipes/thepipe.png"
+ alt="Pipes logo" title="Stylish, functional, iconic." align="right" />
+
 Pipey stream processing for Clojure. Build yourself a reusable
 streaming pipeline from highly orthogonal pieces.
 
