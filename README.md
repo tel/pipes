@@ -38,9 +38,80 @@ then
 
 ```Clojure
 (use 'pipes.core)
-(connect (list-source (range 50)) (take-sink 10))
-; (0 1 2 3 4 5 6 7 8 9)
+(use 'cheshire.core)
+
+;; Get yourself 20 tweets
+(p/connect
+ (p/left-fuse
+  (streaming-http-source
+   :get "https://stream.twitter.com/1/statuses/sample.json"
+   :auth {:user u :password p})
+  (p/nothing-on-error 
+   (p/map-conduit #(parse-string % true)))
+  (p/map-conduit #(select-keys % [:text])))
+ (p/take-sink 20))
 ```
+
+## Wait, what just happened?
+
+Pipey processing starts out generalizing `reduce`. Normally there 
+are two things going on in a `reduce`
+
+1. A value is popped off a seq
+2. That value is fed into an accumulation function along with the 
+   current state (in the parlance "it's sunk into a Sink").
+
+things get pipey when you separate those concerns.
+
+```Clojure
+(partial reduce + 0)
+```
+
+is the same as
+
+```Clojure
+(fn [lst]
+  (connect (list-source lst)
+           (sink [acc (atom 0)]
+             (update [vals]
+               (swap! acc (partial + (reduce + vals)))
+               (yield))
+             (close []
+               (yield @acc)))))
+```
+
+which looks much more complex, but now the `(list-source lst)` 
+component is free to be exchanged. Besides, you can also write
+it as `(reduction-sink + 0)`, but now you see how to write your
+own sinks.
+
+Generally, pipey computation occurs when you `connect` a `Sink` and 
+a `Source`. Sources generate (possibly infinite) streams of data and 
+Sinks consume it producing some kind of output. You can customize your
+Sources or Sinks by affixing a Conduit. For instance, the `naturals-source`
+counts upward forever, let's change it to a `range-source` which stops
+after generating `n` numbers.
+
+```Clojure
+(defn range-source [n]
+  (left-fuse (naturals-source) (take-conduit n)))
+```
+
+or build a summation Sink that only sums positive numbers
+
+```Clojure
+(defn sum+sink []
+  (right-fuse (filter-conduit pos?) (reduction-sink + 0)))
+```
+
+or even a Conduit which passes the first `n` positive numbers
+
+```Clojure
+(defn take-pos-conduit [n]
+  (center-fuse (filter-conduit pos?) (take-conduit n)))
+```
+
+## Disclaimer
 
 **Everything will change soon.** Don't trust the API until version 1.0.0. You have been warned.
 
