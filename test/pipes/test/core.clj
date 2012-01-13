@@ -5,6 +5,10 @@
 (defn list-indepotent [lst]
   (connect (list-source lst) (list-sink)))
 
-(deftest listIndepotency
+(deftest list-indepotency
   (is (= (range 30)
-         (listIndepotent (range 30)))))
+         (list-indepotent (range 30)))))
+
+(deftest take-test
+  (is (= (count (connect (constant-source 1) (take-sink 30)))
+         30)))
