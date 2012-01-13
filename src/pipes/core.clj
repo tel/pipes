@@ -58,7 +58,7 @@
 ;;; data Stream a = Stream a | EOF
 ;;; type SourceResult a  = Stream a
 ;;; type ConduitResult a = Maybe (Stream a)
-;;; type SinkResult a    = Maybe (b, Stream a))
+;;; type SinkResult a    = Maybe (b, Stream a)
 ;;;
 ;;; These are mapped into native Clojure hashes with tags
 ;;; {:eof      true
@@ -454,11 +454,11 @@
     (pass [vals] (block (map f vals)))))
 
 (defn take-conduit [n]
-  (conduit [limit (atom n)]
+  (conduit [limit (atom (inc n))]
     (pass [vals]
           (let [[add rest] (split-at @limit vals)]
             (swap! limit #(- % (count add)))
-            (if (< @limit 0)
+            (if (<= @limit 0)
               (eof)
               (block add))))))
 
