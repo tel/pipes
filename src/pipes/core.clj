@@ -9,33 +9,63 @@
 ;;; and managed when building pipes. The prepare method returns the
 ;;; appropriate piping function function closed over the prepared
 ;;; state. These override deref for convenience.
-(defrecord Source [prepare]
-  clojure.lang.IDeref
-  (deref [source] (.prepare source)))
+(defrecord Source [prepareFn])
+(defrecord Conduit [prepareFn])
+(defrecord Sink [prepareFn])
 
-(defrecord Conduit [prepare]
-  clojure.lang.IDeref
-  (deref [cond] (.prepare cond)))
+(defmacro mkSource [& body]
+  `(Source.
+    (fn []
+      ~@body)))
 
-(defrecord Sink [prepare]
-  clojure.lang.IDeref
-  (deref [sink] (.prepare sink)))
+(defmacro mkConduit [& body]
+  `(Conduit.
+    (fn []
+      ~@body)))
+
+(defmacro mkSink [& body]
+  `(Sink.
+    (fn []
+      ~@body)))
+
+(defn prepare*
+  "Prepares a SourceConduitSink by calling its stored prepare
+  function."
+  [scs] ((.prepareFn scs)))
+
+;;; TODO: This method of preparation doesn't work because we need to
+;;; have the let form surround the function, but the try forms need to
+;;; be inside the function.
+;; 
+;; (defmacro prepare
+;;   "Binds prepared forms of sources, sinks, and conduits while ensuring
+;;   that errors raised by the sequential preparation don't prevent all
+;;   pipes from closing."
+;;   [binds & body]
+;;   (let [[[sym form] rest] (split-at 2 binds)]
+;;     (if (and sym form)
+;;       `(let [~sym (prepare* ~form)]
+;;          (try+
+;;            ;; Expand the rest of the binding forms
+;;            (prepare ~rest ~@body)
+;;            ;; And ensure that upon errors, EOFs are properly passed
+;;            (finally (~sym (eof)))))
+;;       `(do ~@body))))
 
 ;;; In Haskell, the non-IO or stateful types dealt with are (loosely)
 ;;; of the forms:
 ;;;
 ;;; data Stream a = Stream a | EOF
-;;; type SourceResult a  = Either Error (Stream a)
-;;; type ConduitResult a = Either Error (Maybe (Stream a))
-;;; type SinkResult a    = Either Error (Maybe (b, Stream a))
+;;; type SourceResult a  = Stream a
+;;; type ConduitResult a = Maybe (Stream a)
+;;; type SinkResult a    = Maybe (b, Stream a))
 ;;;
 ;;; These are mapped into native Clojure hashes with tags
-;;; {:error    <<error type, probably a hash>>
-;;;  :eof      true
+;;; {:eof      true
 ;;;  :nothing  true
-;;;  :stream  [a]
+;;;  :stream   [a]
 ;;;  :yield    b}
-;;;
+;;; 
 ;;; So that there are some Haskell --> Clojure translation
 ;;; correspondences
 ;;;
@@ -43,38 +73,99 @@
 ;;; Left Error                 --> {:error ...}
 ;;; Right (Just EOF)           --> {:eof true}
 ;;; Right (Just (b, Stream a)) --> {:yield b :stream [a]}
-
+;;; Right (Just (b, EOF))      --> {:yield b :eof true}
+;;;
 ;;; For convenience, there are a few simple constructors of these
 ;;; types
 
-(defn- errorT         [err]   {:error err})
-(defn  nothing        []      {:nothing true})
-(defn  eof            []      {:eof true})
-(defn  block          ([xs]   {:stream xs})
-                      ([]     {:stream []}))
-(defn  yield          ([b xs] {:yield b :stream xs})
-                      ([b]    (yield b [])))
+(defn  eof             []     {:eof true})
+(defn  block          ([]     {:nothing true})
+                      ([xs]   {:stream xs}))
+(defn  yield          ([]     {:nothing true})
+                      ([b]    {:yield b :eof true})
+                      ([b xs] {:yield b :stream xs}))
 
-;;; And a little helper macro for deconstruction
-(defmacro keymatch
-  "A cond form which executes a form, binding keys, iff all the keys
-  in the binding form are in the target hash."
-  [hash & forms]
-  (let [biforms (partition 2 forms)
-        hash# (gensym)]
-    `(let [~hash# ~hash]
-       (cond ~@(apply concat
-                      (map (fn [[kys form]]
-                             `((every?
-                                #(not= ::nope
-                                       (% ~hash# ::nope))
-                                [~@(filter keyword? kys)])
-                               (let [~@(apply concat
-                                              (map (fn [[key var]]
-                                                     `(~var (~key ~hash#)))
-                                                   (partition 2 kys)))]
-                                 ~form)))
-                           biforms))))))
+;;; There are only three kinds of "type matching" that need to happen,
+;;; one for each kind of result.
+(defmacro match-enumeration
+  ;; matches: Stream a
+  [obj objsym
+   eof-binds    eof-form
+   stream-binds stream-form]
+  `(let [~objsym ~obj]
+     (cond
+      ;; EOF
+      (:eof ~objsym)
+      (let [~@(mapcat list eof-binds
+                      [])]
+        ~eof-form)
+
+      ;; Stream a
+      (:stream ~objsym)
+      (let [~@(mapcat list stream-binds
+                      `[(:stream ~objsym)])]
+        ~stream-form)
+
+      ;; Else
+      true
+      (throw+ {:fatal "Expecting type (Stream a)."
+               :obj   ~objsym}))))
+
+(defmacro match-piping
+  ;; matches: Maybe (Stream a)
+  [obj objsym
+   eof-binds     eof-form
+   nothing-binds nothing-form
+   stream-binds  stream-form]
+  `(let [~objsym ~obj]
+     (cond
+      ;; Just EOF
+      (:eof ~objsym)
+      (let [~@(mapcat list eof-binds
+                      [])]
+        ~eof-form)
+
+      ;; Nothing
+      (:nothing ~objsym)
+      (let [~@(mapcat list nothing-binds
+                      [])]
+        ~nothing-form)
+      
+      ;; Just (Stream a)
+      (:stream ~objsym)
+      (let [~@(mapcat list stream-binds
+                      `[(:stream ~objsym)])]
+        ~stream-form)
+
+      ;; Else
+      true
+      (throw+ {:fatal "Expecting type Maybe (Stream a)."
+               :obj   ~objsym}))))
+
+(defmacro match-yielded
+  ;; matches: Maybe (b, Stream a)
+  [obj objsym
+   nothing-binds nothing-form
+   yield-binds   yield-form]
+  `(let [~objsym ~obj]
+     (cond
+      ;; Nothing
+      (:nothing ~objsym)
+      (let [~@(mapcat list nothing-binds
+                      [])]
+        ~nothing-form)
+      
+      ;; Just (b, Stream a)
+      (:yield ~objsym)
+      (let [~@(mapcat list yield-binds
+                      `[(:yield  ~objsym)
+                        (:stream ~objsym)])]
+        ~yield-form)
+
+      ;; Else
+      true
+      (throw+ {:fatal "Expecting type Maybe (Stream a)."
+               :obj   ~objsym}))))
 
 ;;; CONNECTION
 ;;;
@@ -84,40 +175,18 @@
 (defn connect
   "Executes the pipe formed when `source` is connected to `sink`."
   [source sink]
-  (let [psrc  (@source)
-        psink (@sink)]
-    (try+
-      (loop [cyc (block)
-             ret nil]
-        (if (not ret)
-          ;; Get a value off the source
-          (let [val0 (psrc cyc)]
-            (keymatch val0
-              ;; :: Left Error
-              [:error _] (recur cyc val0)
-              ;; Invalid value catching
-              [:nothing _]
-              (errorT {:fatal "Nothing value passed through a connection."})
-              [:yield _]
-              (errorT {:fatal "Yield value passed through a connection."})
-              ;; else
-              []
-              (let [val1 (psink val0)]
-                (keymatch val1
-                  ;; :: Left Error
-                  [:error _]     (recur cyc val1)
-                  ;; :: Right Nothing
-                  [:nothing _]   (recur cyc nil) ; keep going
-                  ;; :: Right (Just (b, Stream a))
-                  [:yield b
-                   :stream as]   (recur {:stream as} b)
-                  [] (throw+ {:fatal "Strange value passed to source."
-                              :value val1})))))
-          ;; Return a value after the sink yields
-          ret))
-      ;; And be sure to kill state on both of them!
-      (finally (psrc  (eof))
-               (psink (eof))))))
+  (let [psrc  (prepare* source)
+        psink (prepare* sink)]
+    (loop [return nil]
+      (if return return
+          ;; Push the source an empty chunk
+          (match-enumeration (psrc (block [])) a
+            [] (match-yielded (psink a) b
+                 [] (throw+ {:fatal "Sink did not yield on EOF"})
+                 [out] out)
+            [] (match-yielded (psink a) b
+                 [] (recur nil)
+                 [out] out))))))
 
 ;;; FUSION
 ;;;
@@ -136,63 +205,32 @@
 (defn left-fuse
   "Fuse a source and a conduit returning a new source."
   [source conduit]
-  (Source.
-   (fn []
-     (let [psrc (@source)
-           pcond (@conduit)]
-       (fn loop [stream0]
-         (let [stream1 (psrc stream0)]
-           (keymatch stream1
-             ;; If there's a legitimate stream, then pass it to the
-             ;; conduit
-             [:stream as]
-             (let [stream2 (pcond stream1)]
-               (keymatch stream2
-                 ;; Nothing was returned by the conduit? Okay, well,
-                 ;; sources can't behave this way, so we loop until it
-                 ;; succeeds.
-                 [:nothing _] (loop (block))
-                 ;; Otherwise, in Haskell we'd have to manipulate the
-                 ;; types, but in Clojure we're good! Just push it along
-                 [] stream2))
-             ;; These are invalid values, so let's throw errors
-             [:nothing _]
-             (errorT {:fatal "Nothing value passed through a left fuse."})
-             [:yield _]
-             (errorT {:fatal "Yield value passed through a left fuse."})
-             ;; Pass any other types along
-             [] stream1)))))))
+  (mkSource
+   (let [psrc (prepare* source)
+         pcond (prepare* conduit)]
+     (fn produce [in]
+       (match-enumeration (psrc in) a
+         [] (pcond a)
+         ;; TODO: Can we eliminate this m-e call? Both get passed
+         ;; along? When can this be eliminated?
+         [] (match-piping (pcond a) b
+              [] b
+              [] (produce (block []))
+              [] b))))))
 
 (defn right-fuse
   "Fuse a conduit and a sink returning a new sink."
   [conduit sink]
-  (Sink.
-   (fn []
-     (let [pcond (@conduit)
-           psink (@sink)]
-       (fn loop [stream0]
-         (let [stream1 (pcond stream0)]
-           (keymatch stream1
-             ;; These are invalid values, so raise an error
-             [:yield _]
-             (errorT {:fatal "Yield valud passed through a right fuse."})
-             ;; Nothings pass through
-             [:nothing _] stream1
-             ;; But if it's a stream or EOF
-             [] (let [stream2 (psink stream1)]
-                  (keymatch stream2
-                    ;; If the sink yields, rewrap the yield dropping the
-                    ;; remainder of the inner stream.  This is weird, but
-                    ;; clearly necessary for type safety.
-                    ;;
-                    ;; rightFuse :: Conduit a b -> Sink c b -> Sink c a
-                    ;;
-                    ;; Therefore, the resultant sink returns leftover
-                    ;; streams of type [a], but we don't have those any
-                    ;; more (unless we collect from and store them off
-                    ;; the conduit).
-                    [:yield b] (yield b)
-                    [] stream2)))))))))
+  (mkSink
+   (let [pcond (prepare* conduit)
+         psink (prepare* sink)]
+     (fn consume [in]
+       (match-piping (pcond in) a
+         [] (match-yielded (psink a) b
+              [] (throw+ {:fatal "Sink returned Nothing when passed EOF."})
+              [] b)
+         [] a
+         [] (psink a))))))
 
 (defn center-fuse
   "Fuse two conduits in order (horizontal composition) returning a new
@@ -200,17 +238,14 @@
   ;; This is the easiest fusion since the interfaces are basically
   ;; identical.
   [ca cb]
-  (Conduit.
-   (fn []
-     (let [pca (@ca)
-           pcb (@cb)]
-       (fn loop [stream0]
-         (let [stream1 (pca stream0)]
-           (keymatch stream1
-             [:stream _] (pcb stream1)
-             [:yield _]
-             (errorT {:fatal "Yield value passed through a center fuse."})
-             [] stream1)))))))
+  (mkConduit
+   (let [pca (prepare* ca)
+         pcb (prepare* cb)]
+     (fn passage [in]
+       (match-piping (pca in) a
+         [] (pcb a)
+         [] a
+         [] (pcb a))))))
 
 ;;; BUILDS
 ;;;
@@ -224,11 +259,11 @@
 ;;; Prepared sources are functions of the psuedo-Haskell (ignoring
 ;;; state and IO monads) type
 ;;;
-;;; PreparedSource :: Stream a -> Either Error (Stream a)
+;;; PreparedSource :: Stream a -> Stream a
 ;;;
-;;; And they must satisfy the 1-off indepotence
-;;; 
-;;; EOF^2 == constantly (Right EOF)
+;;; And they must satisfy the law that
+;;;
+;;; EOF -> EOF; * -> EOF forever
 ;;;
 ;;; I.e. after they've recieved one EOF, they should always return
 ;;; EOFs themselves.
@@ -276,32 +311,26 @@
         replace-form
         (or (function-named 'replace def-forms)
             `(fn [_#]))]
-    `(Source.
-      (fn []
-        (let [doors# (atom true)
-              ~@binds
-              closer# ~close-form
-              replacer# ~replace-form
-              nexter# ~next-form]
-          (fn pull# [val#] ;; :: Stream a
-            (keymatch val#
-              ;; cleanup and eof on eof
-              [:eof _#] (do (close! doors#)
-                            (closer#)
-                            (eof))
-
-              [:stream vals#]
-              (if (empty? vals#)
-                ;; on empty stream, play a next value
-                (short-on-closed doors# (nexter#))
-                
-                ;; on replacement stream, replace then loop with an
-                ;; empty stream
-                (do (replacer# vals#)
-                    (pull# (block))))
-
-              [] (throw+ {:fatal "Strange value passed to source."
-                          :value val#}))))))))
+    `(mkSource
+      (let [doors# (atom true)
+            ~@binds
+            closer# ~close-form
+            replacer# ~replace-form
+            nexter# ~next-form]
+        (fn pull# [in#] ;; :: Stream a
+          (short-on-closed doors#
+            (match-enumeration in# a#
+              [] (do (close! doors#)
+                     (closer#)
+                     ;; since it's an EOF, return it
+                     a#)
+              ;; These values are the replacement values.
+              [vals#] (if (not (empty? vals#))
+                        (do (replacer# vals#)
+                            ;; loop again now that we can ensure there's
+                            ;; nothing to replace
+                            (pull# (block [])))
+                        (nexter#)))))))))
 
 (defmacro sink
   "Define a Sink optionally closed over a let binding. A minimal
@@ -323,20 +352,19 @@
         close-form
         (or (function-named 'close def-forms)
             `(fn [] (yield nil)))]
-    `(Sink.
-      (fn []
-        (let [doors# (atom true)
-              ~@binds
-              updater# ~update-form
-              closer# ~close-form]
-          (fn pull# [val0#] ;;:: Stream a
-            (keymatch val0#
-              [:error _#] val0#
-              ;; On EOF, we call close and use its return value
-              [:eof _#] (do (close! doors#)
-                            (closer#))
-              ;; Otherwise there's a real stream and we need an update
-              [:stream vals#] (updater# vals#))))))))
+    `(mkSource
+      (let [doors# (atom true)
+            ~@binds
+            updater# ~update-form
+            closer# ~close-form]
+        (fn pull# [in#] ;;:: Stream a
+          (if (open? doors#)
+            (match-enumeration in# a#
+              [] (do (close! doors#)
+                     (closer#))
+              [vals#] (updater# vals#))
+            (throw+ {:fatal "Sink recieved values after being closed."
+                     :obj in#})))))))
 
 (defmacro conduit
   "Define a Conduit optionally closed over a let binding. A minimal
@@ -362,47 +390,38 @@
               ~@binds
               passer# ~pass-form
               closer# ~close-form]
-          (fn pull# [val0#] ;;:: Stream a
-            (keymatch val0#
-              [:eof _#]   (do (close! doors#)
-                              (closer#))
-              [:stream vals#] (short-on-closed doors# (passer# vals#)))))))))
+          (fn pull# [in#] ;;:: Stream a
+            (short-on-closed doors#
+              (match-enumeration in# a#
+                [] (do (close! doors#)
+                       (closer#))
+                [vals#] (passer# vals#)))))))))
 
 ;;; VERTICAL COMPOSITION
 ;;; 
 ;;; Sinks are monads in their return values under vertical
 ;;; (sequential) composition.
 (m/defmonad sink-m
-  [m-result (fn [v] (Sink. (fn [] (fn [] (yield v)))))
+  [m-result (fn [v] (sink []
+                      (update [_] (yield v))
+                      (close  []  (yield v)))
+              (mkSink (fn [_] (yield v))))
    m-bind (fn [sink f]
-            (Sink.
-             (fn []
-               (let [psink (@sink)
-                     ;; This variable tracks when the outer sink has
-                     ;; returned and we need only worry about the
-                     ;; inner.
-                     inner (atom nil)]
-                 (fn loop [stream0]
-                   (if (not @inner)
-                     ;; Process in the outer sink
-                     (keymatch stream0
-                       ;; If EOF is encountered, we're done
-                       [:eof a] stream0
-                       ;; same with errors
-                       [:error a] stream0
-                       ;; But otherwise we've got a stream and should look for
-                       ;; yields
-                       [] (let [stream1 (psink stream0)]
-                            [:error a] stream1
-                            [:nothing a] stream1
-                            ;; If the first sink yields then it's time to start
-                            ;; the next sink
-                            [:yield b :stream as]
-                            (do
-                              ;; Set the inner bypass
-                              (swap! inner (constantly (f b)))
-                              ;; And loop the excess back
-                              (loop (block as)))))))))))])
+            (mkSink
+             (let [psink (prepare* sink)
+                   inner (atom nil)]
+               (fn consume [in]
+                 (if @inner
+                   ;; If we've already passed control to the inner
+                   ;; sink, just pass it through
+                   (@inner in)
+                   ;; Otherwise, we need to exhaust the outer one
+                   ;; first
+                   (match-yielded (psink in) a
+                     [] a
+                     [result leftover]
+                     (do (swap! inner (constantly (prepare* (f result))))
+                         (consume (block leftover)))))))))])
 
 ;;; Some example sources
 (defn constant-source [v]
@@ -450,7 +469,7 @@
 (defn list-sink []
   (sink [memory (atom [])]
     (update [vals] (swap! memory #(concat % vals))
-            (nothing))
+            (block))
     (close [] (yield @memory))))
 
 (defn take-sink [n]
