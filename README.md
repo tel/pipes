@@ -49,8 +49,8 @@ then
    (map-conduit #(parse-string % true)))
   (map-conduit #(select-keys % [:text])))
  (take-sink 20))
-; ({:text RT @Demisaurus: With @_NabriaaROZAY , :)}
-;  {:text RT @theazizi: Prefer wearing tshirts and jeans than dressing up}
+; ({:text "RT @Demisaurus: With @_NabriaaROZAY , :)"}
+;  {:text "RT @theazizi: Prefer wearing tshirts and jeans than dressing up"}
 ;  ...)
 ```
 
