@@ -40,15 +40,15 @@ then
 (use 'cheshire.core)
 
 ;; Get yourself 20 tweets
-(p/connect
- (p/left-fuse
+(connect
+ (left-fuse
   (streaming-http-source
    :get "https://stream.twitter.com/1/statuses/sample.json"
    :auth {:user u :password p})
-  (p/nothing-on-error 
-   (p/map-conduit #(parse-string % true)))
-  (p/map-conduit #(select-keys % [:text])))
- (p/take-sink 20))
+  (nothing-on-error 
+   (map-conduit #(parse-string % true)))
+  (map-conduit #(select-keys % [:text])))
+ (take-sink 20))
 ; ({:text RT @Demisaurus: With @_NabriaaROZAY , :)}
 ;  {:text RT @theazizi: Prefer wearing tshirts and jeans than dressing up}
 ;  ...)
