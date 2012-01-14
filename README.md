@@ -85,8 +85,8 @@ is the same as
 
 which looks much more complex, but now the `(list-source lst)` 
 component is free to be exchanged. Besides, you can also write
-it as `(reduction-sink + 0)`, but now you see how to write your
-own sinks.
+the `(sink ...)` as `(reduction-sink + 0)` for short. It's an
+equivalent Sink.
 
 Generally, pipey computation occurs when you `connect` a `Sink` and 
 a `Source`. Sources generate (possibly infinite) streams of data and 
