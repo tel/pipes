@@ -9,8 +9,8 @@ Build yourself a streaming pipeline from orthogonal pieces
 ## Background
 
 Originally concieved by [Oleg](http://okmij.org/ftp/) for Haskell as 
-["Enumerators and Iteratees"](http://okmij.org/ftp/Streams.html), 
-pipey processing was a solution for building IO pipelines which can 
+[Enumerators and Iteratees](http://okmij.org/ftp/Streams.html), 
+pipey processing is a solution for building IO pipelines which can 
 process input in constant space while keeping tight control of file 
 handles and other scare resources. The concept was expanded in Yesod 
 into [Conduits](http://www.yesodweb.com/blog/2012/01/conduits-conduits)
@@ -23,8 +23,7 @@ easily accessible mutable state and try+/catch+ (via
 implementation is fairly simple allowing new Sources, Sinks, and
 Conduits to be written easily.
 
-Use pipey computation to handle streaming data and light parsing
-today!
+Use pipey computation to handle streaming data today!
 
 ## Usage
 
