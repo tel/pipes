@@ -9,22 +9,21 @@ Build yourself a streaming pipeline from orthogonal pieces
 ## Background
 
 Originally concieved by [Oleg](http://okmij.org/ftp/) for Haskell as 
-["Enumerators and Iteratees"](http://okmij.org/ftp/Streams.html), 
-pipey processing was a solution for building IO pipelines which can 
+[Enumerators and Iteratees](http://okmij.org/ftp/Streams.html), 
+pipey processing is a solution for building IO pipelines which can 
 process input in constant space while keeping tight control of file 
 handles and other scare resources. The concept was expanded in Yesod 
 into [Conduits](http://www.yesodweb.com/blog/2012/01/conduits-conduits)
 which admitted that mutable state was easier to handle than monadic
-state.
+state. Pipes steals ideas from both.
 
-Pipes is a Clojure implementation of these ideas. As Clojure has
+Pipes is a Clojure implementation of pipey processing. As Clojure has
 easily accessible mutable state and try+/catch+ (via
 [Slingshot](https://github.com/scgilardi/slingshot)) the
 implementation is fairly simple allowing new Sources, Sinks, and
 Conduits to be written easily.
 
-Use pipey computation to handle streaming data and light parsing
-today!
+Use pipey computation to handle streaming data today!
 
 ## Usage
 
@@ -41,17 +40,17 @@ then
 (use 'cheshire.core)
 
 ;; Get yourself 20 tweets
-(p/connect
- (p/left-fuse
+(connect
+ (left-fuse
   (streaming-http-source
    :get "https://stream.twitter.com/1/statuses/sample.json"
    :auth {:user u :password p})
-  (p/nothing-on-error 
-   (p/map-conduit #(parse-string % true)))
-  (p/map-conduit #(select-keys % [:text])))
- (p/take-sink 20))
-; ({:text RT @Demisaurus: With @_NabriaaROZAY , :)}
-;  {:text RT @theazizi: Prefer wearing tshirts and jeans than dressing up}
+  (nothing-on-error 
+   (map-conduit #(parse-string % true)))
+  (map-conduit #(select-keys % [:text])))
+ (take-sink 20))
+; ({:text "RT @Demisaurus: With @_NabriaaROZAY , :)"}
+;  {:text "RT @theazizi: Prefer wearing tshirts and jeans than dressing up"}
 ;  ...)
 ```
 
@@ -85,8 +84,8 @@ is the same as
 
 which looks much more complex, but now the `(list-source lst)` 
 component is free to be exchanged. Besides, you can also write
-it as `(reduction-sink + 0)`, but now you see how to write your
-own sinks.
+the `(sink ...)` as `(reduction-sink + 0)` for short. It's an
+equivalent Sink.
 
 Generally, pipey computation occurs when you `connect` a `Sink` and 
 a `Source`. Sources generate (possibly infinite) streams of data and 
@@ -116,7 +115,8 @@ or even a Conduit which passes the first `n` positive numbers
 
 ## Disclaimer
 
-**Everything will change soon.** Don't trust the API until version 1.0.0. You have been warned.
+**Everything will change soon.** Don't trust the API until
+version 1.0.0. Or, well, help me make it.
 
 ## License
 
