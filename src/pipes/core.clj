@@ -1,6 +1,7 @@
 (ns pipes.core
   (:require [clojure.algo.monads :as m]
-            [clojure.string :as str])
+            [clojure.string :as str]
+            [http.async.client :as c])
   (:use [clojure.set :only [subset?]]
         [slingshot.slingshot :only [throw+ try+]]))
 
@@ -70,11 +71,13 @@
 ;;; So that there are some Haskell --> Clojure translation
 ;;; correspondences
 ;;;
-;;; Right Nothing              --> {:nothing true}
-;;; Left Error                 --> {:error ...}
-;;; Right (Just EOF)           --> {:eof true}
-;;; Right (Just (b, Stream a)) --> {:yield b :stream [a]}
-;;; Right (Just (b, EOF))      --> {:yield b :eof true}
+;;; Nothing            --> {:nothing true}
+;;; Just EOF           --> {:eof true}
+;;; Just (b, Stream a) --> {:yield b :stream [a]}
+;;; Just (b, EOF)      --> {:yield b :eof true}
+;;;
+;;; NOTE: Why not use {:stream []} for Nothing? What would (yield)
+;;; mean then? What would getting {:stream []} from a Sink mean?
 ;;;
 ;;; For convenience, there are a few simple constructors of these
 ;;; types
@@ -86,6 +89,8 @@
                       ([b]    {:yield b :eof true})
                       ([b xs] {:yield b :stream xs}))
 
+(defn eof? [x] (not (not (:eof x))))
+
 ;;; There are only three kinds of "type matching" that need to happen,
 ;;; one for each kind of result.
 (defmacro match-enumeration
@@ -96,7 +101,7 @@
   `(let [~objsym ~obj]
      (cond
       ;; EOF
-      (:eof ~objsym)
+      (eof? ~objsym)
       (let [~@(mapcat list eof-binds
                       [])]
         ~eof-form)
@@ -476,6 +481,39 @@
                ;; Send Nothing along
                (block)))))))
 
+(defn source-repeatedly
+  "Take a source and change it into one which repeats an infinite or
+  finite number of times. Takes the source and every time the source
+  signals an EOF reinitializes the same source again."
+  ([inner-source]
+     (mkSource
+      (let [pinner (atom (prepare* inner-source))]
+        (fn loop [in]
+          (let [out (@pinner in)]
+            (if (not (eof? out))
+              out
+              (do
+                ;; Reinitialize the wrapped Source and loop.
+                (swap! pinner (constantly (prepare* inner-source)))
+                (loop in))))))))
+  ([n inner-source]
+     (mkSource
+      (let [pinner    (atom (prepare* inner-source))
+            eof-count (atom 0)]
+        (fn loop [in]
+          (let [out (@pinner in)]
+            (if (not (eof? out))
+              out
+              (do
+                ;; Increase the counter
+                (swap! eof-count inc)
+                (if (<= @eof-count n)
+                  (do ;; Reinitialize the wrapped Source and loop.
+                    (swap! pinner (constantly (prepare* inner-source)))
+                    (loop in))
+                  ;; Or just pass it through
+                  (eof))))))))))
+
 ;;; Some example sources
 (defn constant-source [v]
   (source []
@@ -501,6 +539,19 @@
                (block take)))))
     (replace [vals]
              (dosync (alter memory (partial concat vals))))))
+
+(defn streaming-http-source
+  "Manages an asynchronous HTTP connection and streams string chunks
+  from the body of the response."
+  [method url & options]
+  (source [client (c/create-client)
+             resp (apply c/stream-seq client method url options)]
+    (next []
+      (let [pull (first (c/string resp))]
+        (if pull
+          (block [pull])
+          (eof))))
+    (close [] (.close client))))
 
 (defn print-conduit []
   (conduit []
