@@ -74,7 +74,7 @@
    mksink Sink has Failed or Yielded pushed chunks raise errors."
   
   [& body]
-  `(Conduit.
+  `(Sink.
     (fn []
       ;; We rewrite the run symbol to be a macro that wraps fn
       (mt/macrolet [(~'run
@@ -185,6 +185,16 @@
           [:error]   (protect# false out#)
           [:nothing] (protect# ~continue-var out#))))))
 
+(defmacro source1*
+  "Similar to `source`, but with a slightly different interface. Here,
+  the body returns `nil` on EOF or a single value otherwise."
+  [[& binds] body-form & [close-form]]
+  `(source [~@binds]
+     (let [out# ~body-form]
+       (if out#
+         (chunk [out#])
+         (eof)))))
+
 (defmacro conduit1
   "Similar to `conduit`, but with a slightly different interface. Here,
   single values are passed instead of chunks. Note that if an error
@@ -202,8 +212,9 @@
          (let [do-body# (fn [~val-var]
                           ~body-form)]
            (loop [acc# [] dec# vals#]
-             (let [[head# & tail#] dec#]
-               (if head#
+             (if (empty? dec#)
+               (chunk acc#)
+               (let [[head# & tail#] dec#]
                  (match-conduit (do-body# head#) result#
                    ;; On errors we lose the accumulator
                    [:error err# rem#] (do
@@ -212,13 +223,13 @@
                                                              (concat rem# tail#)))
                                         (chunk acc#))
                    [:nothing]         (recur acc# tail#)
+                   ;; Make sure we flush the buffer if it exists
                    [:eof]             (if (empty? acc#)
                                         (eof)
                                         (chunk acc#))
-                   [:stream vals#]    (recur (concat acc# vals#) tail#))
-                 ;; We've pass all the values by here
-                 (chunk acc#)))))
-         (eof)))))
+                   [:stream vals#]    (recur (concat acc# vals#) tail#))))))
+         (eof)))
+     ~close-form))
 
 (defmacro conduit1*
   "Similar to `conduit1`, but with a slightly different
@@ -226,17 +237,50 @@
   value or said new value if it is ready."
   [[val-var] [& binds] body-form & [close-form]]
   `(conduit [continue?# vals#] [~@binds]
-     (do (let [maybe-result# (filter (comp not nil?)
-                                     (for [val# vals#]
-                                       (let [~val-var]
-                                         ~body-form)))
-               result# (if (empty? maybe-result#)
-                         (nothing)
-                         (chunk maybe-result#))]
-           result#))
+     (let [maybe-result# (filter (comp not nil?)
+                                 (for [val# vals#]
+                                   (let [~val-var]
+                                     ~body-form)))
+           result# (if (empty? maybe-result#)
+                     (nothing)
+                     (chunk maybe-result#))]
+       result#)
      ~close-form))
 
-;; (defmacro sink1
-;;   "Similar to `sink`, but with a slightly different interface. Here,
-;;   single values are passed instead of chunks."
-;;   [[val-var] [& binds] body-form & [close-form]])
+(defmacro sink1
+  "Similar to `sink`, but with a slightly different interface. Here,
+  single values are passed instead of chunks."
+  [[val-var] [& binds] body-form & [close-form]]
+  `(sink [continue?# vals#] [~@binds]
+     (if continue?#
+       (let [do-body# (fn [~val-var]
+                        ~body-form)]
+         (loop [dec# vals#]
+           (if (empty? dec#)
+             (nothing)
+             (let [[head# & tail#] dec#]
+               (match-sink (do-body# head#) result#
+                 [:error err# rem#] (fail-leaving (concat rem# tail#) err#)
+                 [:nothing]         (recur tail#)
+                 [:yield out# rem#] (yield out# (concat rem# tail#)))))))
+       (fail-leaving [] {:fatal "Sink1 did not consume enough before EOF."}))
+     ~close-form))
+
+(defmacro sink1*
+  "Similar to `sink1`, but with a slightly different interface. Now,
+  the body form needs only return nil, to represent Nothing, until it
+  yields a value."
+  [[val-var] [& binds] body-form & [close-form]]
+  `(sink [continue?# vals#] [~@binds]
+     (if continue?#
+       (let [do-body# (fn [~val-var]
+                        ~body-form)]
+         (loop [dec# vals#]
+           (if (empty? dec#)
+             (nothing)
+             (let [[head# & tail#] dec#
+                   out# (do-body# head#)]
+               (if out#
+                 (yield out# (if (empty? tail#) [] tail#))
+                 (recur tail#))))))
+       (fail-leaving [] {:fatal "Sink1* did not consume enough before EOF."}))))

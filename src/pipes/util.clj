@@ -49,16 +49,15 @@
              (eof)
              
              ;; Otherwise, process the body
-             (let [out# (do ~@body)]
-               ;; If the body returns an Error, EOF or the fn was
-               ;; passed a kill signal, close the doors so future
-               ;; results are EOF'd
-               (when (or (fail? out#)
-                         (eof? out#)
-                         (not ~(first args)))
-                 (swap! doors# (constantly false)))
-               ;; But ALWAYS return the body if it makes it this far
-               out#)))))))
+             (match-conduit (do ~@body) out#
+               [:error]   (do (nillify doors#) out#)
+               [:eof]     (do (nillify doors#) out#)
+               [:nothing] (if (not ~(first args))
+                            (throw+ {:fatal "Conduit invariant violated: gave Nothing on EOF."})
+                            out#)
+               [:stream]  (do (when (not ~(first args))
+                                (nillify doors#))
+                              out#))))))))
 
 (defn sink-protected-run
   "Rewrites run forms to be protected to follow the sink EOF
@@ -73,7 +72,7 @@
              ;; If the doors are already closed then this is an
              ;; errorful situation, raise it!
              (throw+
-              {:fatal "Sink invariant violated: cannot receive more data after Yielding or closure"
+              {:fatal "Sink invariant violated: cannot receive after Yielding or closure"
                :input ~(second args)})
              
              ;; Otherwise, process the body
