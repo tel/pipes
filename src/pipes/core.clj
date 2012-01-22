@@ -1,13 +1,14 @@
 (ns pipes.core
   (:refer-clojure
    :exclude [chunk
-             chunk-append 	chunk-buffer
+             chunk-append chunk-buffer
              chunk-cons chunk-first
              chunk-next chunk-rest])
-  (:require [clojure.algo.monads :as m]
-            [clojure.string :as str])
-  (:use [pipes.types]
-        [pipes.builder]
+  (:require [pipes
+             [conduits :as co]
+             [sinks    :as si]
+             [sources  :as so]])
+  (:use [pipes types builder]
         [slingshot.slingshot :only [throw+ try+]]))
 
 ;;; CONNECTION
