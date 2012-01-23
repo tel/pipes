@@ -1,6 +1,6 @@
 (ns pipes.conduits
   (:refer-clojure
-   :exclude [println map filter
+   :exclude [println map filter merge
              
              chunk
              chunk-append 	chunk-buffer
@@ -11,7 +11,7 @@
   (:use [pipes builder types]))
 
 (defn pass
-  "[n -> Conduit a a] Passes `n` values then returns EOF
+  "[Integer -> Conduit a a] Passes `n` values then returns EOF
   forevermore. Not identical to take."
   [n]
   ;; Note that we can't use conduit1 here since we *might* want to
@@ -62,3 +62,40 @@
       (if (empty? @buffer)
         (eof)
         (chunk @buffer)))))
+
+(defn split-every
+  "[Integer -> Conduit a [a]] Conduit that breaks an input stream into
+  vectors of length `n`."
+  [n]
+  (conduit [cont? vals] [rem (atom [])]
+    (if cont?
+      (let [vals (concat @rem vals)
+            [parts remainder] (loop [acc [] vals vals]
+                                (let [[part rest] (split-at n vals)]
+                                  (if (= n (count part))
+                                    (recur (cons part acc) rest)
+                                    [(reverse acc) part])))]
+        (swap! rem (constantly remainder))
+        (if (empty? parts)
+          (nothing)
+          (chunk parts)))
+      (chunk @rem))))
+
+(defn groups-of
+  "[Integer -> Conduit a [a]] Conduit that returns groupings of size
+  `n` from the stream. A lot like split-every but assured to only
+  return groups of size `n`."
+  [n]
+  (conduit [cont? vals] [pcond (prepare (split-every n))]
+    (if cont?
+      (pcond true vals)
+      (eof))
+    (close pcond)))
+
+(defn merge
+  "[Conduit [a] a] Conduit that merges sequential objects into a
+  single sequence. Takes an optional merging function (\"merge-with\")
+  applied on the stream to merge objects; defaults to concat."
+  ([] (merge concat))
+  ([merger]
+     (map (partial apply merger))))

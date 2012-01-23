@@ -11,7 +11,7 @@
   (:use [pipes builder types]))
 
 (defn take
-  "[n -> Sink a [a]] Accumulates `n` values into a Vector. Terminating."
+  "[Integer -> Sink a [a]] Accumulates `n` values into a Vector. Terminating."
   [n] (sink [cont? vals] [left (atom n)
                           acc  (atom [])]
         (if cont?
