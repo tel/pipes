@@ -183,6 +183,7 @@
       (~'run [~continue-var ~vals-var]
         (match-sink ~body-form out#
           [:error]   (protect# false out#)
+          [:yield]   (protect# false out#)
           [:nothing] (protect# ~continue-var out#))))))
 
 (defmacro source1*
